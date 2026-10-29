@@ -1,0 +1,16 @@
+{
+  "sections": {
+    "active": "Active incidents",
+    "resolved": "Resolved incidents"
+  },
+  "channel_pattern": "^inc-",
+  "statuses": {
+    "active": ["Triage", "Investigating", "Fixing", "Monitoring", "Paused"],
+    "resolved": ["Documenting", "Reviewing", "Closed", "Merged", "Declined", "Canceled"]
+  },
+  "credentials": {
+    "keychain_token_service": "slack-incident-sections-token",
+    "keychain_cookie_service": "slack-incident-sections-cookie"
+  },
+  "max_resolved_per_run": 15
+}
