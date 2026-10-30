@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # Install the job that runs slack-incident-sections every 5 minutes: launchd on macOS, a systemd
-# user timer on Linux. On Windows, use install.ps1.
+# user timer on Linux. On Windows, use scripts\install.ps1.
 set -euo pipefail
 
 name="slack-incident-sections"
 label="local.$name"
-repo="$(cd "$(dirname "$0")" && pwd)"
+repo="$(cd "$(dirname "$0")/.." && pwd)"
 python="$(command -v python3)"
 config_dir="${XDG_CONFIG_HOME:-$HOME/.config}/$name"
 interval="${INTERVAL_SECONDS:-300}"
@@ -94,14 +94,25 @@ case "$(uname -s)" in
   Darwin) install_launchd ;;
   Linux)
     if ! systemctl --user show-environment >/dev/null 2>&1; then
+      minutes=$((interval / 60 > 0 ? interval / 60 : 1))
+      if ((minutes < 60)); then
+        schedule="*/$minutes * * * *" exact=$((interval % 60 == 0 && 60 % minutes == 0))
+      else
+        schedule="0 */$((minutes / 60)) * * *" exact=$((interval % 3600 == 0 && 24 % (minutes / 60) == 0))
+      fi
+      if ((!exact)); then
+        echo "Cron can't run every ${interval}s; pick a divisor of 60 minutes or 24 hours, or adjust the line." >&2
+      fi
+      log_dir="${XDG_STATE_HOME:-$HOME/.local/state}/$name"
       echo "No systemd user session. Add this line with 'crontab -e' instead:" >&2
-      echo "*/$((interval / 60 > 0 ? interval / 60 : 1)) * * * * \"$python\" \"$repo/slack_incident_sections.py\" --config \"$config_dir/config.json\" --log-file \"\$HOME/.local/state/$name/sync.log\"" >&2
+      echo "$schedule \"$python\" \"$repo/slack_incident_sections.py\" --config \"$config_dir/config.json\" --log-file \"$log_dir/sync.log\"" >&2
+      echo "Cron jobs can't reach the Secret Service; use the 'file' or 'command' credential store." >&2
       exit 1
     fi
     install_systemd
     ;;
   *)
-    echo "Unsupported system $(uname -s); on Windows, run install.ps1." >&2
+    echo "Unsupported system $(uname -s); on Windows, run scripts\\install.ps1." >&2
     exit 1
     ;;
 esac

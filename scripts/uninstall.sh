@@ -18,7 +18,7 @@ case "$(uname -s)" in
     echo "Removed $name.timer."
     ;;
   *)
-    echo "Unsupported system $(uname -s); on Windows, run uninstall.ps1." >&2
+    echo "Unsupported system $(uname -s); on Windows, run scripts\\uninstall.ps1." >&2
     exit 1
     ;;
 esac

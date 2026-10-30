@@ -1,10 +1,11 @@
 # Install the Task Scheduler job that runs slack-incident-sections every 5 minutes on Windows.
-# Usage: powershell -ExecutionPolicy Bypass -File install.ps1 [-IntervalSeconds 300]
+# Usage: powershell -ExecutionPolicy Bypass -File scripts\install.ps1 [-IntervalSeconds 300]
 param([int]$IntervalSeconds = 300)
 $ErrorActionPreference = "Stop"
+if ($IntervalSeconds -lt 60) { throw "Task Scheduler repeats at most once a minute; use 60 seconds or more." }
 
 $name = "slack-incident-sections"
-$repo = $PSScriptRoot
+$repo = Split-Path -Parent $PSScriptRoot
 $configHome = if ($env:XDG_CONFIG_HOME) { $env:XDG_CONFIG_HOME } else { Join-Path $HOME ".config" }
 $configDir = Join-Path $configHome $name
 $logFile = Join-Path $HOME ".local\state\$name\sync.log"
@@ -27,7 +28,7 @@ if (-not (Test-Path $config)) {
 
 $arguments = "`"$repo\slack_incident_sections.py`" --config `"$config`" --log-file `"$logFile`""
 $action = New-ScheduledTaskAction -Execute $pythonw -Argument $arguments -WorkingDirectory $repo
-$trigger = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Seconds $IntervalSeconds)
+$trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddSeconds(10) -RepetitionInterval (New-TimeSpan -Seconds $IntervalSeconds)
 $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -MultipleInstances IgnoreNew
 Register-ScheduledTask -TaskName $name -Action $action -Trigger $trigger -Settings $settings `
     -Description "Sort incident.io channels into Slack sidebar sections" -Force | Out-Null

@@ -75,11 +75,10 @@ browser. When the log shows `invalid_auth`, copy them again.
 ### 2. Configure
 
 ```bash
-./install.sh   # first run creates ~/.config/slack-incident-sections/config.json
+make install   # first run creates ~/.config/slack-incident-sections/config.json
 ```
 
-On Windows, run `powershell -ExecutionPolicy Bypass -File install.ps1` instead, and `python` in
-place of `python3` below.
+On Windows, use `python` in place of `python3` below.
 
 Edit the config, then check it against your workspace:
 
@@ -91,21 +90,23 @@ python3 slack_incident_sections.py --dry-run    # what a run would do
 
 ### 3. Install the job
 
-macOS and Linux:
-
 ```bash
-./install.sh                         # every 5 minutes
-INTERVAL_SECONDS=120 ./install.sh    # or another interval
-./uninstall.sh                       # remove it
+make install                         # every 5 minutes
+make install INTERVAL_SECONDS=120    # or another interval
+make uninstall                       # remove it
 ```
 
-Windows (PowerShell):
+The same commands work on every OS. On Windows, install make first with
+`winget install ezwinports.make` (or `choco install make`, `scoop install make`), or skip make and
+run the scripts directly:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File install.ps1                         # every 5 minutes
-powershell -ExecutionPolicy Bypass -File install.ps1 -IntervalSeconds 120    # or another interval
-powershell -ExecutionPolicy Bypass -File uninstall.ps1                       # remove it
+powershell -ExecutionPolicy Bypass -File scripts\install.ps1                         # every 5 minutes
+powershell -ExecutionPolicy Bypass -File scripts\install.ps1 -IntervalSeconds 120    # or another interval
+powershell -ExecutionPolicy Bypass -File scripts\uninstall.ps1                       # remove it
 ```
+
+Without make on macOS or Linux, the same goes for `scripts/install.sh` and `scripts/uninstall.sh`.
 
 | | Job | Log |
 | --- | --- | --- |
@@ -116,7 +117,7 @@ powershell -ExecutionPolicy Bypass -File uninstall.ps1                       # r
 State: `~/.local/state/slack-incident-sections/state.json`.
 
 On Linux and Windows the job runs only while you're logged in, which the Secret Service and
-Credential Manager need anyway. On Linux without systemd, `install.sh` prints a crontab line to
+Credential Manager need anyway. On Linux without systemd, `make install` prints a crontab line to
 add instead. `--log-file PATH` appends the log to a file, which is how the Linux and Windows jobs
 write theirs.
 
@@ -162,8 +163,9 @@ python3 slack_incident_sections.py --inspect C0123456789   # how each incident.i
 
 ## Development
 
+Needs [uv](https://docs.astral.sh/uv/). `make` lists every target.
+
 ```bash
-uv run --group dev pytest
-uv run --group dev ruff check . && uv run --group dev ruff format --check .
-uv run --group dev mypy
+make check       # lint, type-check for every OS, and test
+make format      # fix linting and formatting
 ```
