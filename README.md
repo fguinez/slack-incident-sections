@@ -30,10 +30,15 @@ dependencies.
 2. Open DevTools → **Network**, filter by `api/`, and click any request.
 3. **Token:** in **Payload**, click **view source** and copy the `token` value (`xoxc-…`, up to the
    next `&`). The formatted view truncates long values with `…`; don't copy from there.
-4. **Cookie:** right-click the same request → **Copy** → **Copy as cURL**. The `d` cookie is in it.
+4. **Cookie:** right-click the same request → **Copy** → **Copy as cURL**. The `d` cookie is in it:
+   its value is the `xoxd-…` right after `d=`, up to the next `;`. On Windows pick **Copy as cURL
+   (bash)**.
 
-Store both in the macOS Keychain. The token prompts for the value, so it stays out of your shell
-history:
+Store both where `credentials.store` in the config says (see [Credential stores](#credential-stores)).
+The default, `auto`, uses your OS's own secret store: the Keychain on macOS, the Secret Service
+(GNOME Keyring, KWallet) on Linux, the Credential Manager on Windows.
+
+**macOS Keychain.** The token prompts for the value, so it stays out of your shell history:
 
 ```bash
 security add-generic-password -U -a "$USER" -s slack-incident-sections-token -w
@@ -47,7 +52,22 @@ pbpaste | grep -oE "(^|[ ;'\"])d=xoxd-[^;'\" ]+" | head -1 | sed -E "s/^[ ;'\"]?
 
 Then clear the clipboard with `pbcopy < /dev/null`.
 
-On other systems, or to skip the Keychain, set `SLACK_XOXC_TOKEN` and `SLACK_D_COOKIE` instead.
+**Linux Secret Service** (needs `secret-tool`, from `libsecret-tools` or `libsecret`). Each command
+prompts for the value:
+
+```bash
+secret-tool store --label="Slack token" service slack-incident-sections-token
+secret-tool store --label="Slack cookie" service slack-incident-sections-cookie
+```
+
+**Windows Credential Manager.** `/pass` with no value prompts for it:
+
+```powershell
+cmdkey /generic:slack-incident-sections-token /user:slack /pass
+cmdkey /generic:slack-incident-sections-cookie /user:slack /pass
+```
+
+**Anywhere:** set `SLACK_XOXC_TOKEN` and `SLACK_D_COOKIE`; they take precedence over any store.
 
 The credentials are your browser session: they stop working when you sign out of Slack in that
 browser. When the log shows `invalid_auth`, copy them again.
@@ -88,9 +108,28 @@ Every key is optional; missing ones take the defaults shown in
 | `channel_pattern` | Regex for incident channel names. incident.io's default is `inc-<number>-…`. |
 | `statuses.active`, `statuses.resolved` | Your incident.io status names, by whether the incident still needs work. Add any custom statuses your organisation uses; the log warns about unknown ones. |
 | `incident_app_ids`, `incident_bot_ids` | Which messages come from incident.io. The app id defaults to incident.io's public Slack app; add a `bot_id` if your workspace uses a custom bot. |
-| `credentials.keychain_token_service`, `credentials.keychain_cookie_service` | Keychain service names for the token and cookie. |
+| `credentials.store`, `credentials.token`, `credentials.cookie` | Where the token and cookie are read from; see below. |
 | `max_resolved_per_run` | Safety brake: a run that would resolve more incidents than this stops instead (use `--force` if it's real). |
 | `state_file` | Where the last known state per channel is stored. |
+
+### Credential stores
+
+`SLACK_XOXC_TOKEN` and `SLACK_D_COOKIE` always win. Otherwise `credentials.store` picks the source,
+and `credentials.token` / `credentials.cookie` say which item to read in it:
+
+| `store` | `token` / `cookie` are | Example |
+| --- | --- | --- |
+| `auto` (default) | item names in the OS store below | `"slack-incident-sections-token"` |
+| `keychain` | macOS Keychain service names | `"slack-incident-sections-token"` |
+| `secret-service` | Secret Service `service` attribute (via `secret-tool`) | `"slack-incident-sections-token"` |
+| `windows` | Windows Credential Manager generic credential names | `"slack-incident-sections-token"` |
+| `file` | paths to files holding the value (keep them `chmod 600`) | `"~/.config/slack-incident-sections/token"` |
+| `command` | a command that prints the value, as a string or an argument list | `"op read op://Private/Slack/token"`, `["pass", "show", "slack/token"]` |
+
+`command` covers any password manager with a CLI (1Password `op`, `pass`, Bitwarden `bw`,
+`gopass`, PowerShell `Get-Secret`…). It's only allowed when the config file is yours and not
+writable by others, since whoever can edit it chooses what runs. Configs that still use
+`keychain_token_service` / `keychain_cookie_service` keep working.
 
 ## Debugging
 

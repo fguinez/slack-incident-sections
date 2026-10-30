@@ -9,8 +9,9 @@
     "resolved": ["Documenting", "Reviewing", "Closed", "Merged", "Declined", "Canceled"]
   },
   "credentials": {
-    "keychain_token_service": "slack-incident-sections-token",
-    "keychain_cookie_service": "slack-incident-sections-cookie"
+    "store": "auto",
+    "token": "slack-incident-sections-token",
+    "cookie": "slack-incident-sections-cookie"
   },
   "max_resolved_per_run": 15
 }
