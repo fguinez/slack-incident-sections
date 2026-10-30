@@ -493,19 +493,35 @@ def main() -> None:
     parser.add_argument("--channels", action="store_true", help="list incident channels, their state and section")
     parser.add_argument("--inspect", metavar="CHANNEL_ID", help="show how each incident.io message is classified")
     parser.add_argument("--force", action="store_true", help="allow more resolutions than max_resolved_per_run")
+    parser.add_argument("--log-file", type=Path, help="append the log to this file instead of printing it")
     args = parser.parse_args()
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s", stream=sys.stdout)
-
-    config = Config.load(args.config)
-    slack = SlackClient(*credentials(config))
-    if args.sections:
-        show_sections(slack)
-    elif args.channels:
-        show_channels(slack, config)
-    elif args.inspect:
-        inspect_channel(slack, args.inspect, config)
+    log_format = "%(asctime)s %(levelname)s %(message)s"
+    if args.log_file:
+        args.log_file.parent.mkdir(parents=True, exist_ok=True)
+        logging.basicConfig(level=logging.INFO, format=log_format, filename=args.log_file, encoding="utf-8")
     else:
-        run(slack, config, args.dry_run, args.force)
+        logging.basicConfig(level=logging.INFO, format=log_format, stream=sys.stdout)
+
+    try:
+        config = Config.load(args.config)
+        slack = SlackClient(*credentials(config))
+        if args.sections:
+            show_sections(slack)
+        elif args.channels:
+            show_channels(slack, config)
+        elif args.inspect:
+            inspect_channel(slack, args.inspect, config)
+        else:
+            run(slack, config, args.dry_run, args.force)
+    except SystemExit as error:
+        # Scheduled runs may have no visible stderr, so the reason must reach the log file.
+        if args.log_file and isinstance(error.code, str):
+            log.error("%s", error.code)
+        raise
+    except Exception:
+        if args.log_file:
+            log.exception("Run failed")
+        raise
 
 
 if __name__ == "__main__":

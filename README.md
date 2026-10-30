@@ -19,8 +19,8 @@ you put it until the incident moves on. The first run only records where every i
   session: an `xoxc-` token and the `d` cookie. These endpoints are undocumented and can change
   without notice.
 
-It runs on macOS as a launchd job (every 5 minutes by default) with Python 3.11+ and no
-dependencies.
+It runs every 5 minutes by default, as a launchd job on macOS, a systemd user timer on Linux or a
+Task Scheduler task on Windows, with Python 3.11+ and no dependencies.
 
 ## Setup
 
@@ -78,6 +78,9 @@ browser. When the log shows `invalid_auth`, copy them again.
 ./install.sh   # first run creates ~/.config/slack-incident-sections/config.json
 ```
 
+On Windows, run `powershell -ExecutionPolicy Bypass -File install.ps1` instead, and `python` in
+place of `python3` below.
+
 Edit the config, then check it against your workspace:
 
 ```bash
@@ -88,14 +91,34 @@ python3 slack_incident_sections.py --dry-run    # what a run would do
 
 ### 3. Install the job
 
+macOS and Linux:
+
 ```bash
 ./install.sh                         # every 5 minutes
 INTERVAL_SECONDS=120 ./install.sh    # or another interval
 ./uninstall.sh                       # remove it
 ```
 
-Log: `~/Library/Logs/slack-incident-sections/sync.log`. State:
-`~/.local/state/slack-incident-sections/state.json`.
+Windows (PowerShell):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File install.ps1                         # every 5 minutes
+powershell -ExecutionPolicy Bypass -File install.ps1 -IntervalSeconds 120    # or another interval
+powershell -ExecutionPolicy Bypass -File uninstall.ps1                       # remove it
+```
+
+| | Job | Log |
+| --- | --- | --- |
+| macOS | launchd agent `local.slack-incident-sections` | `~/Library/Logs/slack-incident-sections/sync.log` |
+| Linux | systemd user timer `slack-incident-sections.timer` | `~/.local/state/slack-incident-sections/sync.log` |
+| Windows | Task Scheduler task `slack-incident-sections` | `%USERPROFILE%\.local\state\slack-incident-sections\sync.log` |
+
+State: `~/.local/state/slack-incident-sections/state.json`.
+
+On Linux and Windows the job runs only while you're logged in, which the Secret Service and
+Credential Manager need anyway. On Linux without systemd, `install.sh` prints a crontab line to
+add instead. `--log-file PATH` appends the log to a file, which is how the Linux and Windows jobs
+write theirs.
 
 ## Config
 

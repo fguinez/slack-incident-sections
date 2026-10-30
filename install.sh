@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# Install the launchd job that runs slack-incident-sections every 5 minutes.
+# Install the job that runs slack-incident-sections every 5 minutes: launchd on macOS, a systemd
+# user timer on Linux. On Windows, use install.ps1.
 set -euo pipefail
 
-label="local.slack-incident-sections"
+name="slack-incident-sections"
+label="local.$name"
 repo="$(cd "$(dirname "$0")" && pwd)"
 python="$(command -v python3)"
-config_dir="${XDG_CONFIG_HOME:-$HOME/.config}/slack-incident-sections"
-log_dir="$HOME/Library/Logs/slack-incident-sections"
-plist="$HOME/Library/LaunchAgents/$label.plist"
+config_dir="${XDG_CONFIG_HOME:-$HOME/.config}/$name"
 interval="${INTERVAL_SECONDS:-300}"
 
 if ! "$python" -c 'import sys; sys.exit(sys.version_info < (3, 11))'; then
@@ -15,14 +15,18 @@ if ! "$python" -c 'import sys; sys.exit(sys.version_info < (3, 11))'; then
   exit 1
 fi
 
-mkdir -p "$config_dir" "$log_dir" "$(dirname "$plist")"
+mkdir -p "$config_dir"
 if [[ ! -f "$config_dir/config.json" ]]; then
   cp "$repo/config.example.json" "$config_dir/config.json"
   echo "Created $config_dir/config.json; edit it, then rerun this script."
   exit 0
 fi
 
-cat >"$plist" <<EOF
+install_launchd() {
+  local log_dir="$HOME/Library/Logs/$name"
+  local plist="$HOME/Library/LaunchAgents/$label.plist"
+  mkdir -p "$log_dir" "$(dirname "$plist")"
+  cat >"$plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -49,7 +53,55 @@ cat >"$plist" <<EOF
 </dict>
 </plist>
 EOF
+  launchctl bootout "gui/$(id -u)/$label" 2>/dev/null || true
+  launchctl bootstrap "gui/$(id -u)" "$plist"
+  echo "Installed $label (every ${interval}s). Log: $log_dir/sync.log"
+}
 
-launchctl bootout "gui/$(id -u)/$label" 2>/dev/null || true
-launchctl bootstrap "gui/$(id -u)" "$plist"
-echo "Installed $label (every ${interval}s). Log: $log_dir/sync.log"
+install_systemd() {
+  local unit_dir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
+  local log_dir="${XDG_STATE_HOME:-$HOME/.local/state}/$name"
+  mkdir -p "$unit_dir" "$log_dir"
+  cat >"$unit_dir/$name.service" <<EOF
+[Unit]
+Description=Sort incident.io channels into Slack sidebar sections
+
+[Service]
+Type=oneshot
+ExecStart="$python" "$repo/slack_incident_sections.py" --config "$config_dir/config.json" --log-file "$log_dir/sync.log"
+EOF
+  cat >"$unit_dir/$name.timer" <<EOF
+[Unit]
+Description=Run $name every ${interval}s
+
+[Timer]
+OnActiveSec=0
+OnUnitActiveSec=${interval}s
+
+[Install]
+WantedBy=timers.target
+EOF
+  systemctl --user daemon-reload
+  systemctl --user enable "$name.timer"
+  systemctl --user restart "$name.timer"
+  echo "Installed $name.timer (every ${interval}s). Log: $log_dir/sync.log"
+  if [[ "$(loginctl show-user "$USER" --property=Linger --value 2>/dev/null)" != "yes" ]]; then
+    echo "It runs only while you're logged in; 'loginctl enable-linger' keeps it running after logout."
+  fi
+}
+
+case "$(uname -s)" in
+  Darwin) install_launchd ;;
+  Linux)
+    if ! systemctl --user show-environment >/dev/null 2>&1; then
+      echo "No systemd user session. Add this line with 'crontab -e' instead:" >&2
+      echo "*/$((interval / 60 > 0 ? interval / 60 : 1)) * * * * \"$python\" \"$repo/slack_incident_sections.py\" --config \"$config_dir/config.json\" --log-file \"\$HOME/.local/state/$name/sync.log\"" >&2
+      exit 1
+    fi
+    install_systemd
+    ;;
+  *)
+    echo "Unsupported system $(uname -s); on Windows, run install.ps1." >&2
+    exit 1
+    ;;
+esac
