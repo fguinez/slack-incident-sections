@@ -1,4 +1,5 @@
 import json
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -9,9 +10,11 @@ from slack_incident_sections import (
     RESOLVED,
     Config,
     Move,
+    credentials,
     latest_state,
     message_state,
     plan_moves,
+    read_secret,
     section_index,
 )
 
@@ -129,6 +132,84 @@ def test_config_loads_from_file(tmp_path: Path) -> None:
 
     assert (config.active_section, config.resolved_section) == ("On fire", "Resolved incidents")
     assert config.is_incident_channel("incident-42") and not config.is_incident_channel("inc-42")
+
+
+@pytest.mark.parametrize(
+    ("credentials_config", "expected"),
+    [
+        ({}, ("auto", "slack-incident-sections-token")),
+        ({"keychain_token_service": "old-name"}, ("auto", "old-name")),
+        ({"store": "command", "token": ["pass", "show", "slack"]}, ("command", ["pass", "show", "slack"])),
+    ],
+    ids=["defaults", "legacy-keychain-key", "command"],
+)
+def test_config_reads_credential_store(credentials_config: dict[str, Any], expected: tuple[str, Any]) -> None:
+    """The credential store and references come from the config, falling back to the old Keychain keys."""
+    config = Config.from_dict({"credentials": credentials_config})
+
+    assert (config.credential_store, config.token_ref) == expected
+
+
+def test_read_secret_from_file(tmp_path: Path) -> None:
+    """The file store returns the file's content without surrounding whitespace."""
+    path = tmp_path / "token"
+    path.write_text("xoxc-123\n")
+    path.chmod(0o600)
+
+    assert read_secret("file", str(path)) == "xoxc-123"
+
+
+@pytest.mark.parametrize("ref", ["{python} -c \"print('xoxd-456')\"", ["{python}", "-c", "print('xoxd-456')"]])
+def test_read_secret_from_command(ref: str | list[str]) -> None:
+    """The command store returns the command's output, given as a string or an argument list."""
+    ref = ref.replace("{python}", sys.executable) if isinstance(ref, str) else [sys.executable, *ref[1:]]
+
+    assert read_secret("command", ref) == "xoxd-456"
+
+
+@pytest.mark.parametrize(
+    ("store", "ref"),
+    [
+        ("file", "/nonexistent/token"),
+        ("command", ["false"]),
+        ("command", ["no-such-binary-xyz"]),
+        ("command", ""),
+        ("vault", "x"),
+    ],
+    ids=["missing-file", "failing-command", "missing-command", "empty-command", "unknown-store"],
+)
+def test_read_secret_fails_clearly(store: str, ref: str | list[str]) -> None:
+    """An unreadable secret stops the run with a message instead of a traceback."""
+    with pytest.raises(SystemExit):
+        read_secret(store, ref)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX permissions")
+def test_command_store_needs_private_config(tmp_path: Path) -> None:
+    """A config others can write to can't choose a command to run."""
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps({"credentials": {"store": "command", "token": "true"}}))
+    path.chmod(0o666)
+
+    with pytest.raises(SystemExit):
+        Config.load(path)
+
+
+def test_config_rejects_unknown_store(tmp_path: Path) -> None:
+    """A misspelled store fails when the config loads, not on the first scheduled run."""
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps({"credentials": {"store": "keychian"}}))
+
+    with pytest.raises(SystemExit):
+        Config.load(path)
+
+
+def test_environment_overrides_store(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The environment variables take precedence over any configured store."""
+    monkeypatch.setenv("SLACK_XOXC_TOKEN", "xoxc-env")
+    monkeypatch.setenv("SLACK_D_COOKIE", "xoxd-env")
+
+    assert credentials(Config(credential_store="vault")) == ("xoxc-env", "xoxd-env")
 
 
 def test_section_index_maps_names_and_channels() -> None:

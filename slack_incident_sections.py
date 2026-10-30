@@ -18,6 +18,7 @@ import json
 import logging
 import os
 import re
+import shlex
 import subprocess
 import sys
 import time
@@ -72,8 +73,10 @@ class Config:
     incident_bot_ids: tuple[str, ...] = ()
     active_statuses: tuple[str, ...] = ("triage", "investigating", "fixing", "monitoring", "paused")
     resolved_statuses: tuple[str, ...] = ("documenting", "reviewing", "closed", "merged", "declined", "canceled")
-    keychain_token_service: str = "slack-incident-sections-token"
-    keychain_cookie_service: str = "slack-incident-sections-cookie"
+    # Where the token and cookie are read from when the environment doesn't set them; see read_secret.
+    credential_store: str = "auto"
+    token_ref: str | list[str] = "slack-incident-sections-token"
+    cookie_ref: str | list[str] = "slack-incident-sections-cookie"
     # More resolutions than this in one run more likely means a parsing bug.
     max_resolved_per_run: int = 15
     state_file: Path = DEFAULT_STATE
@@ -98,8 +101,9 @@ class Config:
             incident_bot_ids=tuple(raw.get("incident_bot_ids", defaults.incident_bot_ids)),
             active_statuses=tuple(statuses.get("active", defaults.active_statuses)),
             resolved_statuses=tuple(statuses.get("resolved", defaults.resolved_statuses)),
-            keychain_token_service=credentials.get("keychain_token_service", defaults.keychain_token_service),
-            keychain_cookie_service=credentials.get("keychain_cookie_service", defaults.keychain_cookie_service),
+            credential_store=credentials.get("store", defaults.credential_store),
+            token_ref=credentials.get("token", credentials.get("keychain_token_service", defaults.token_ref)),
+            cookie_ref=credentials.get("cookie", credentials.get("keychain_cookie_service", defaults.cookie_ref)),
             max_resolved_per_run=raw.get("max_resolved_per_run", defaults.max_resolved_per_run),
             state_file=Path(raw.get("state_file", defaults.state_file)).expanduser(),
         )
@@ -109,7 +113,14 @@ class Config:
         if not path.exists():
             log.info("No config at %s; using defaults", path)
             return cls()
-        return cls.from_dict(json.loads(path.read_text()))
+        config = cls.from_dict(json.loads(path.read_text()))
+        if config.credential_store not in CREDENTIAL_STORES:
+            raise SystemExit(f"Unknown credential store {config.credential_store!r} in {path}")
+        if config.credential_store == "command" and sys.platform != "win32":
+            info = path.stat()
+            if info.st_uid != os.getuid() or info.st_mode & 0o022:
+                raise SystemExit(f"{path} must be yours and not writable by others to use the 'command' store")
+        return config
 
     def is_incident_bot(self, message: dict[str, Any]) -> bool:
         return message.get("app_id") in self.incident_app_ids or message.get("bot_id") in self.incident_bot_ids
@@ -191,22 +202,108 @@ def plan_moves(
     ]
 
 
-def keychain_secret(service: str) -> str:
-    result = subprocess.run(
-        ["security", "find-generic-password", "-a", os.environ.get("USER", ""), "-s", service, "-w"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if result.returncode != 0:
-        raise SystemExit(f"Missing Keychain item {service!r}; see README.md")
+CREDENTIAL_STORES = ("auto", "keychain", "secret-service", "windows", "file", "command")
+
+
+def native_store() -> str:
+    if sys.platform == "darwin":
+        return "keychain"
+    if sys.platform == "win32":
+        return "windows"
+    return "secret-service"
+
+
+def run_secret_command(argv: list[str], what: str) -> str:
+    try:
+        result = subprocess.run(argv, capture_output=True, text=True, check=False)
+    except FileNotFoundError:
+        raise SystemExit(f"{argv[0]!r} not found, needed to read {what}; see README.md") from None
+    if result.returncode != 0 or not result.stdout.strip():
+        raise SystemExit(f"Could not read {what}; see README.md")
     return result.stdout.strip()
 
 
+def windows_credential(target: str) -> str:
+    """Read a generic credential from the Windows Credential Manager (as stored by `cmdkey /generic`)."""
+    if sys.platform != "win32":
+        raise SystemExit("The 'windows' credential store only works on Windows")
+    import ctypes
+    from ctypes import wintypes
+
+    class Credential(ctypes.Structure):
+        _fields_ = [
+            ("Flags", wintypes.DWORD),
+            ("Type", wintypes.DWORD),
+            ("TargetName", wintypes.LPWSTR),
+            ("Comment", wintypes.LPWSTR),
+            ("LastWritten", wintypes.FILETIME),
+            ("CredentialBlobSize", wintypes.DWORD),
+            ("CredentialBlob", ctypes.POINTER(ctypes.c_ubyte)),
+            ("Persist", wintypes.DWORD),
+            ("AttributeCount", wintypes.DWORD),
+            ("Attributes", ctypes.c_void_p),
+            ("TargetAlias", wintypes.LPWSTR),
+            ("UserName", wintypes.LPWSTR),
+        ]
+
+    advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+    credential = ctypes.POINTER(Credential)()
+    cred_type_generic = 1
+    if not advapi32.CredReadW(target, cred_type_generic, 0, ctypes.byref(credential)):
+        raise SystemExit(f"Missing Windows credential {target!r}; see README.md")
+    try:
+        blob = ctypes.string_at(credential.contents.CredentialBlob, credential.contents.CredentialBlobSize)
+    finally:
+        advapi32.CredFree(credential)
+    try:
+        value = blob.decode("utf-16-le").strip()
+    except UnicodeDecodeError:
+        raise SystemExit(f"Windows credential {target!r} isn't UTF-16 text; store it with cmdkey") from None
+    if not value:
+        raise SystemExit(f"Windows credential {target!r} is empty")
+    return value
+
+
+def split_command(command: str) -> list[str]:
+    """Split a command line, keeping Windows backslash paths intact."""
+    if sys.platform != "win32":
+        return shlex.split(command)
+    args = shlex.split(command, posix=False)
+    return [arg[1:-1] if len(arg) > 1 and arg[0] == arg[-1] == '"' else arg for arg in args]
+
+
+def read_secret(store: str, ref: str | list[str]) -> str:
+    """Read one secret; `ref` is an item name, a file path or a command, depending on the store."""
+    if store == "auto":
+        store = native_store()
+    if store == "command":
+        argv = split_command(ref) if isinstance(ref, str) else ref
+        if not argv:
+            raise SystemExit("The 'command' credential store needs a command")
+        return run_secret_command(argv, f"the output of {argv[0]!r}")
+    if not isinstance(ref, str):
+        raise SystemExit(f"Credential store {store!r} takes a string, not a list")
+    if store == "keychain":
+        argv = ["security", "find-generic-password", "-a", os.environ.get("USER", ""), "-s", ref, "-w"]
+        return run_secret_command(argv, f"Keychain item {ref!r}")
+    if store == "secret-service":
+        return run_secret_command(["secret-tool", "lookup", "service", ref], f"Secret Service item {ref!r}")
+    if store == "windows":
+        return windows_credential(ref)
+    if store == "file":
+        path = Path(ref).expanduser()
+        if not path.is_file():
+            raise SystemExit(f"Missing credential file {str(path)!r}; see README.md")
+        if os.name == "posix" and path.stat().st_mode & 0o077:
+            log.warning("%s is readable by other users; run chmod 600 on it", path)
+        return path.read_text().strip()
+    raise SystemExit(f"Unknown credential store {store!r}; use one of {', '.join(CREDENTIAL_STORES)}")
+
+
 def credentials(config: Config) -> tuple[str, str]:
-    """Return the Slack token and cookie, from the environment or the macOS Keychain."""
-    token = os.environ.get(TOKEN_ENV) or keychain_secret(config.keychain_token_service)
-    cookie = os.environ.get(COOKIE_ENV) or keychain_secret(config.keychain_cookie_service)
+    """Return the Slack token and cookie, from the environment or the configured credential store."""
+    token = os.environ.get(TOKEN_ENV) or read_secret(config.credential_store, config.token_ref)
+    cookie = os.environ.get(COOKIE_ENV) or read_secret(config.credential_store, config.cookie_ref)
     return token, cookie
 
 
@@ -396,19 +493,35 @@ def main() -> None:
     parser.add_argument("--channels", action="store_true", help="list incident channels, their state and section")
     parser.add_argument("--inspect", metavar="CHANNEL_ID", help="show how each incident.io message is classified")
     parser.add_argument("--force", action="store_true", help="allow more resolutions than max_resolved_per_run")
+    parser.add_argument("--log-file", type=Path, help="append the log to this file instead of printing it")
     args = parser.parse_args()
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s", stream=sys.stdout)
-
-    config = Config.load(args.config)
-    slack = SlackClient(*credentials(config))
-    if args.sections:
-        show_sections(slack)
-    elif args.channels:
-        show_channels(slack, config)
-    elif args.inspect:
-        inspect_channel(slack, args.inspect, config)
+    log_format = "%(asctime)s %(levelname)s %(message)s"
+    if args.log_file:
+        args.log_file.parent.mkdir(parents=True, exist_ok=True)
+        logging.basicConfig(level=logging.INFO, format=log_format, filename=args.log_file, encoding="utf-8")
     else:
-        run(slack, config, args.dry_run, args.force)
+        logging.basicConfig(level=logging.INFO, format=log_format, stream=sys.stdout)
+
+    try:
+        config = Config.load(args.config)
+        slack = SlackClient(*credentials(config))
+        if args.sections:
+            show_sections(slack)
+        elif args.channels:
+            show_channels(slack, config)
+        elif args.inspect:
+            inspect_channel(slack, args.inspect, config)
+        else:
+            run(slack, config, args.dry_run, args.force)
+    except SystemExit as error:
+        # Scheduled runs may have no visible stderr, so the reason must reach the log file.
+        if args.log_file and isinstance(error.code, str):
+            log.error("%s", error.code)
+        raise
+    except Exception:
+        if args.log_file:
+            log.exception("Run failed")
+        raise
 
 
 if __name__ == "__main__":
