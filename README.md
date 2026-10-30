@@ -32,7 +32,13 @@ Task Scheduler task on Windows, with Python 3.11+ and no dependencies.
    next `&`). The formatted view truncates long values with `…`; don't copy from there.
 4. **Cookie:** right-click the same request → **Copy** → **Copy as cURL**. The `d` cookie is in it:
    its value is the `xoxd-…` right after `d=`, up to the next `;`. On Windows pick **Copy as cURL
-   (bash)**.
+   (bash)**. Or skip the cURL: **Application** → **Cookies** → `https://app.slack.com` → the `d`
+   row.
+
+You need both: Slack rejects an `xoxc-` token sent without its `d` cookie.
+
+Together they give full access to your Slack account, like being signed in. Don't share them,
+commit them or paste them anywhere else.
 
 Store both where `credentials.store` in the config says (see [Credential stores](#credential-stores)).
 The default, `auto`, uses your OS's own secret store: the Keychain on macOS, the Secret Service
